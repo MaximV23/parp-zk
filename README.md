@@ -2,7 +2,9 @@
 
 ## About this Repository
 
-This repository contains a prototype implementation of our paper, [Depermissioning Web3: a **P**ermissionless **A**ccountable **R**PC **P**rotocol for Blockchain Networks](https://www.arxiv.org/abs/2506.03940), accepted to [ICDCS'25](https://icdcs2025.icdcs.org/). Some implementation details are simplified, however, the core components necessary to evaluate the **feasibility** and **efficiency** of the protocol are included.
+This repository contains a prototype implementation of our paper, [Depermissioning Web3: a **P**ermissionless **A**ccountable **R**PC **P**rotocol for Blockchain Networks](https://www.arxiv.org/abs/2506.03940), accepted to [ICDCS'25](https://icdcs2025.icdcs.org/). You can access [my presentation slides here](https://github.com/podiumdesu/parp-dev/blob/main/parp-icdcs-slides.pdf).
+
+Some implementation details are simplified, however, the core components necessary to evaluate the **feasibility** and **efficiency** of the protocol are included.
 
 ## Why this exists
 
