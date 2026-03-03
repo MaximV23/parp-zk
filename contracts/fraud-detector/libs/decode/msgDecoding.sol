@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: Apache2
+
+/*
+Max's comment:
+
+
+
+*/
+
+
 pragma solidity ^0.8.17;
 
 import "../rlp/Helper.sol";
@@ -9,6 +18,7 @@ library FraudProofDecoderLibrary {
     using RLPReader for bytes;
     using RLPReader for RLPReader.RLPItem;
     
+    // Expects 12 RLP items and hashes
     function decodeResponse(bytes memory res) external returns (ResponseMsg memory, bytes32) {
         // Step 1: Parse the RLP encoded data
         RLPReader.RLPItem[] memory items = res.toRlpItem().toList();
@@ -99,6 +109,7 @@ library FraudProofDecoderLibrary {
         ));
     }
 
+    // Expects 4 RLP items and hashes
     function decodeRequest(bytes memory serializedReqBody) public returns(RequestBody memory, bytes32) {
         RLPReader.RLPItem[] memory items = serializedReqBody.toRlpItem().toList();
         
@@ -146,7 +157,7 @@ library FraudProofDecoderLibrary {
         ));
     } 
 
-
+    // Similar to decodeResponse but for state proof
     function decodeResponseSP(bytes memory encodedMsg) public returns (ResponseSPMsg memory, bytes32) {
         // Decode the RLP-encoded data
         RLPReader.RLPItem[] memory items = encodedMsg.toRlpItem().toList();

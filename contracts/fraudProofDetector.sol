@@ -1,4 +1,29 @@
 // SPDX-License-Identifier: MIT
+
+/*  TODO
+    CURRENT:    ship proof (array of trie nodes) on-chain and the EVM verifies it
+    GOAL:       ship a fixed size ZK proof that attests the trie proof was checked correclty:
+        1) Off chain witness node generates proof: given header roots, response proof nodes + key, the trie verification fails
+        2) On-chain verifier checks ZK proof and slashes
+*/
+
+/*
+Max's comments:
+
+LC needs the following to generate a VALID fraud proof:
+    - LC MUST VERIFY that request hash matches the expected one (Verify Request Hash)
+    - LC MUST VERIFY that the response contains a valid signature from FN (Verify Response Hash)
+    - LC MUST VERIFY that the channelID of the response matches the request (Verify Response Signature)
+    
+LC generates a fraud proof when (FRAUD):
+    - The payment amount in the response doesn't match the cumulative amount signed by LC in request (Payment Amount Check)
+    - Block height of response > block height indicated in the request by the block hash (Timestamp Check)
+    - Response MUST contain a Merkle proof proving data is part of tree specified by the request type, either transaction trie or state trie "isSP"
+        at the current block height in the response (VERIFY MERKLE PROOF)
+
+=> FRAUD DETECTED -> LC calls fraudProofDetector(response, request, blockheader, witness) on line 111-...
+
+*/
 pragma solidity ^0.8.17;
 
 import "./fraud-detector/interfaces/IPayChan.sol";
@@ -14,7 +39,7 @@ import "./fraud-detector/newHeader.sol";
 
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
-
+// "Payment Amount Check" happens in XProcessor
 contract FraudProofDecoder is FraudProofTxProcessor, FraudProofSPProcessor {
 
     using RLPReader for bytes;
@@ -43,6 +68,21 @@ contract FraudProofDecoder is FraudProofTxProcessor, FraudProofSPProcessor {
     // address constant public lightClient = 0xD25a31702b7b86B2e953Baf9ff88Ef716A5306Cc;
 
 
+    /*
+
+    Max's comments: 
+
+    As seen in "libs/decode/msgDecoding.sol" (REQUEST line 102-133, RESPONSE line 12-76):
+    THE REQUEST:    ChannelId (uint32), Amount (uint), LocalBlockHash (bytes), ReqBytes (bytes) 
+    THE RESPONSE:   ChannelId (bytes32), Amount (uint), SignedReqBody (bytes)(sig on req hqsh), CurrentBlockHeight (uint), ReturnValue (bytes), 
+                        Proof (array), TxIdx (uint32)(key), Signature (bytes)(Fn sig), TxRootHash (bytes)
+
+    "RESPONSESP" (isSP):     ChannelId (bytes32), Amount (uint), ReqBodyHash (bytes), SignedReqBody (bytes), CurrentBlockHeight (uint),
+                                ReturnValue (bytes), Proof (array), Address (bytes)(key), Signature (bytes), TxRootHash (bytes)
+        => similar but uses Address(key) and inteded for state proof (isSP)
+
+    */
+
     function _decodeReqResAndChanValid (
         bytes memory res,
         bytes memory req
@@ -51,7 +91,8 @@ contract FraudProofDecoder is FraudProofTxProcessor, FraudProofSPProcessor {
         (RequestBody memory request, bytes32 reqHash) = FraudProofDecoderLibrary.decodeRequest(req);
         ctx.reqHash = reqHash;
 
-        // Setep 2: Decode Response
+        // Step 2: Decode Response
+        // TODO replace responseMsg proof [][]byte + TxIdx []byte WITH ZKproof []byte of fixed size
         ctx.isSP = (keccak256(abi.encodePacked(getType(res)))) != keccak256(abi.encodePacked("response"));
         if (!ctx.isSP) {
             (ResponseMsg memory response, bytes32 resHash) = FraudProofDecoderLibrary.decodeResponse(res);
@@ -76,36 +117,62 @@ contract FraudProofDecoder is FraudProofTxProcessor, FraudProofSPProcessor {
         }
     }
 
-    function fraudProofDetector(bytes memory res, bytes memory req, bytes memory blockHeaderInfo, address witness) public {        
+    /*
+    Max's comments:
+    
+    fraudProofDetector(response, request, blockheader, witness):
+        1) Decode request and response (=RLP blobs), see "_decodeReqResAndChanValid" above 
+        2) Get channel participants from the on-chain paychannel (Who is LC/FN)
+        3) Link them via hashes and signatures (client signed request hash, full node signed response hash)
+        4) Decode block header to obtain txRoot/stateRoot and recompute its headerhash
+        5) Anchor the header using blockhash(blocknr)
+        6) Verify Merkle/MPT proof against the relevant root (tx vs state)
+        7) Failure -> slash FN and pay LC and witness
 
+    */
+
+    function fraudProofDetector(
+        bytes memory res,               // RLP encoded PARP response 
+        bytes memory req,               // RLP encoded PARP request
+        bytes memory blockHeaderInfo,   // RLP encoded ETH block header (height)
+        address witness
+        ) public {        
+        
+        // 1) Decode request and response
+        // "Verify Response Signature"
         Context memory ctx = _decodeReqResAndChanValid(res, req);
 
-        // Step 3: Get Channel Information
+        // 2) Get channel participants from the on-chain paychannel (Who is LC/FN)
         ChannelInfo memory channelInfo;
         (channelInfo.sender, channelInfo.recipient, channelInfo.status, ) = paychanContract.paychanSelectedArguments(ctx.channelId);
         require(channelInfo.status != 0, "The channel must not be closed.");
 
-        // Step 4: (based on Step 3) verify request and sender from channel information
+        // 3) Link them via hashes and signatures (client signed request hash, full node signed response hash)
+        // signedreqBody is the signqture over reqHash (LC) -> "Verify Request Hash"
+        // resSignedBody is the signature over resHash (FN) -> "Verify Response Hash"
         address requestSigner = ECDSA.recover(ctx.reqHash, ctx.signedReqBody);
         require(requestSigner == channelInfo.sender, "It must be a valid request from the light client.");
 
-        // Step 4: (based on Step 3) verify response and sender from channel information
         address responseSigner = ECDSA.recover(ctx.resHash, ctx.resSignature);
         require(responseSigner == channelInfo.recipient, "It must be a vaid response from the full node.");
 
 
-        // Step 5: Fraud proof detect
-
+        // 4) Decode block header to obtain txRoot/stateRoot and recompute its headerhash
         HeaderDecoder.HeaderResults memory header = HeaderDecoder.decodeHeader(blockHeaderInfo);
 
+        // 5) Anchor the header using blockhash(blocknr)
         bytes32 blockHash = blockhash(ctx.blockNr);
         require(blockHash == header.headerHash, "Cant trust your root values");
         
+        // 6) Verify Merkle/MPT proof against the relevant root (tx vs state)
+        // "VERIFY MERKLE PROOF"
+        // TODO Replace with verify NOIR proof
         bool proofStatus;
         proofStatus = verifyFraudDetection(ctx.isSP, header, ctx.proofKey, ctx.proof);
-
         // If proofStatus is true, it means the merkle proof is not a fraud
         require(proofStatus == false, "Fraud proof is valid. Full node is honest.");
+
+        // 7) Failure -> slash FN and pay LC and witness
         slashWithAddresses(channelInfo.sender, channelInfo.recipient, witness);
     }
     
